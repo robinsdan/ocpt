@@ -19,10 +19,81 @@
 package keypair
 
 import (
+	"bytes"
 	"testing"
 
+	"github.com/ontio/ontology-crypto/ec"
 	"golang.org/x/crypto/ed25519"
 )
+
+func TestDeserializePublicKeyChecked(t *testing.T) {
+	_, ecdsaPub, err := GenerateKeyPair(PK_ECDSA, P256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, ed25519Pub, err := GenerateKeyPair(PK_EDDSA, ED25519)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, sm2Pub, err := GenerateKeyPair(PK_SM2, SM2P256V1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, ethereumPub, err := GenerateKeyPair(PK_ETHECDSA, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ecdsaKey, ok := ecdsaPub.(*ec.PublicKey)
+	if !ok {
+		t.Fatalf("unexpected ECDSA public key type %T", ecdsaPub)
+	}
+	directP256 := ec.EncodePublicKey(ecdsaKey.PublicKey, true)
+
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{name: "generic ECDSA", data: SerializePublicKey(ecdsaPub)},
+		{name: "SM2", data: SerializePublicKey(sm2Pub)},
+		{name: "Ed25519", data: SerializePublicKey(ed25519Pub)},
+		{name: "Ethereum ECDSA", data: SerializePublicKey(ethereumPub)},
+		{name: "direct P-256", data: directP256},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parsed, trailing, err := DeserializePublicKeyChecked(test.data)
+			if err != nil {
+				t.Fatalf("canonical key rejected: %v", err)
+			}
+			if trailing {
+				t.Fatal("canonical key reported trailing data")
+			}
+			if got := SerializePublicKey(parsed); !bytes.Equal(got, test.data) {
+				t.Fatalf("round trip mismatch: got %x, want %x", got, test.data)
+			}
+
+			extended := append(append([]byte{}, test.data...), 0x00, 0xff)
+			parsed, trailing, err = DeserializePublicKeyChecked(extended)
+			if err != nil {
+				t.Fatalf("valid key with trailing data rejected: %v", err)
+			}
+			if !trailing {
+				t.Fatal("trailing data was not reported")
+			}
+			if got := SerializePublicKey(parsed); !bytes.Equal(got, test.data) {
+				t.Fatalf("parsed canonical prefix mismatch: got %x, want %x", got, test.data)
+			}
+
+			if _, trailing, err = DeserializePublicKeyChecked(test.data[:len(test.data)-1]); err == nil {
+				t.Fatal("truncated key accepted")
+			} else if trailing {
+				t.Fatal("truncated key reported as trailing")
+			}
+		})
+	}
+}
 
 // TestParsersDoNotPanicOnShortInput exercises the public parsers with inputs
 // that previously triggered index-out-of-range panics.

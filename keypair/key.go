@@ -274,6 +274,69 @@ func DeserializePublicKey(data []byte) (PublicKey, error) {
 
 }
 
+// DeserializePublicKeyChecked parses the canonical public-key prefix and
+// reports whether additional bytes follow it. The returned key is valid only
+// when err is nil. Callers that require canonical encodings must reject inputs
+// for which trailing is true.
+func DeserializePublicKeyChecked(data []byte) (publicKey PublicKey, trailing bool, err error) {
+	expected, err := serializedPublicKeySize(data)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(data) < expected {
+		return nil, false, errors.New("deserializing public key failed: truncated public key")
+	}
+
+	publicKey, err = DeserializePublicKey(data[:expected])
+	if err != nil {
+		return nil, false, err
+	}
+	return publicKey, len(data) > expected, nil
+}
+
+func serializedPublicKeySize(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, errors.New("deserializing public key failed: empty public key")
+	}
+
+	switch KeyType(data[0]) {
+	case PK_ECDSA, PK_SM2:
+		if len(data) < 3 {
+			return 0, errors.New("deserializing public key failed: truncated EC public key header")
+		}
+		curve, err := GetCurve(data[1])
+		if err != nil {
+			return 0, err
+		}
+		coordinateSize := (curve.Params().BitSize + 7) / 8
+		switch KeyType(data[2]) {
+		case PK_P256_E, PK_P256_O:
+			return 2 + 1 + coordinateSize, nil
+		case PK_P256_NC:
+			return 2 + 1 + coordinateSize*2, nil
+		default:
+			return 0, errors.New("deserializing public key failed: unknown EC encoding mode")
+		}
+	case PK_EDDSA:
+		if len(data) < 2 {
+			return 0, errors.New("deserializing public key failed: truncated EdDSA public key header")
+		}
+		if data[1] != ED25519 {
+			return 0, errors.New("deserializing public key failed: unsupported EdDSA scheme")
+		}
+		return 2 + ed25519.PublicKeySize, nil
+	case PK_P256_E, PK_P256_O:
+		return 1 + (elliptic.P256().Params().BitSize+7)/8, nil
+	case PK_P256_NC:
+		coordinateSize := (elliptic.P256().Params().BitSize + 7) / 8
+		return 1 + coordinateSize*2, nil
+	case PK_ETHECDSA:
+		return 1 + 1 + 2*((ethcrypto.S256().Params().BitSize+7)/8), nil
+	default:
+		return 0, errors.New("deserializing public key failed: unrecognized algorithm label")
+	}
+}
+
 // SerializePrivateKey serializes the input private key into byte array as the
 // following format:
 //
